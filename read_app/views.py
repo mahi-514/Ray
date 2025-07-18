@@ -9,17 +9,19 @@ from ray.runtime_context import get_runtime_context
 from .models import RunLogTable
 import traceback
 import uuid
+import threading
 
 ray_object_store = {}
 
 if not ray.is_initialized():
+    ray.shutdown()
     ray.init(address='auto')
 
 
 @ray.remote
 def readCSVFile(file_path, ray_id):
     try:
-        print(ray_id)  
+        print(f"Task Started: {ray_id}")
 
         time.sleep(60)  
 
@@ -30,6 +32,7 @@ def readCSVFile(file_path, ray_id):
         return {"status": "Success", "ray_id": ray_id, "data": df.to_dict()}
 
     except Exception as e:
+        print(f"ERROR: {str(e)}")
         return {
             "status": "Failed",
             "error": str(e),
