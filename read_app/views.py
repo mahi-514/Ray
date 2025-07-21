@@ -9,17 +9,19 @@ from ray.runtime_context import get_runtime_context
 from .models import RunLogTable
 import traceback
 import uuid
+import threading
+from django.http import JsonResponse
 
 ray_object_store = {}
 
 if not ray.is_initialized():
-    ray.init(address='auto')
-
+    ray.shutdown()
+    ray.init(address='auto', namespace = 'file-processing')
 
 @ray.remote
 def readCSVFile(file_path, ray_id):
     try:
-        print(ray_id)  
+        print(f"Task Started: {ray_id}")
 
         time.sleep(60)  
 
@@ -30,6 +32,7 @@ def readCSVFile(file_path, ray_id):
         return {"status": "Success", "ray_id": ray_id, "data": df.to_dict()}
 
     except Exception as e:
+        print(f"ERROR: {str(e)}")
         return {
             "status": "Failed",
             "error": str(e),
@@ -42,23 +45,22 @@ class ReadOperations(APIView):
         if not file_path:
             return Response({"error": "File path not provided"}, status=400)
 
-        ray_id = uuid.uuid4().hex
-
-        future = readCSVFile.remote(file_path, ray_id)
-        ray_object_store[ray_id] = future  
-
-        RunLogTable.objects.update_or_create(
-            ray_id=ray_id,
-            defaults={"status": "Running"}
-        )
-
         try:
-            result = ray.get(future)
-            RunLogTable.objects.filter(ray_id=ray_id).update(status=result.get("status", "Failed"))
-            return Response(result)
+            ray_id = uuid.uuid4().hex
+
+            master = ray.get_actor("master", namespace="file-processing")
+
+            outer_ref = master.delegate_task.remote(file_path, ray_id)
+            inner_ref = ray.get(outer_ref)
+            result = ray.get(inner_ref)
+
+            return JsonResponse({"ray_id": ray_id, "result": result})
+
         except Exception as e:
-            RunLogTable.objects.filter(ray_id=ray_id).update(status="Failed")
-            return Response({"error": str(e), "ray_id": ray_id}, status=500)
+            return Response({
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }, status=500)
 
 class AbortExecution(APIView):
     def post(self, request):
